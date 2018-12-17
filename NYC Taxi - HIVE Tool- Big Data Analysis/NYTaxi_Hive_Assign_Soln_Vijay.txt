@@ -1,0 +1,357 @@
+--PROBLEM STATEMENT AND OBJECTIVE
+--The New York City Taxi & Limousine Commission (TLC) has provided a dataset of trips made by the taxis in the New York City.The purpose of this dataset is to get a better understanding of the taxi system so that the city of New York can improve the efficiency of in-city commutes.Several exploratory questions can be ANSWERED about the travelling experience for passengers.
+
+--Environment Setup: adding JAR file and setting parameters of Hive for partitioning
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+--CREATING EXTERNAL TABLE
+create external table if not exists nyc_taxi_ext_vj(vendorid int, tpep_pickup_datetime timestamp, tpep_dropoff_datetime timestamp, 
+passenger_count int, trip_distance double, ratecodeid int, store_and_fwd_flag string, pulocationid int, dolocationid int,
+payment_type int, fare_amount double, extra double,	mta_tax double,	tip_amount double, tolls_amount double, improvement_surcharge double,
+total_amount double) 
+COMMENT 'NYC taxi data'
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+location '/common_folder/nyc_taxi_data/'
+TBLPROPERTIES ("skip.header.line.count"="2");
+
+
+--VERIFYING EXTERNAL TABLE CREATION AND TOTAL RECORDS ARE 18793079 OBS 17 VARIABLES.
+select * from nyc_taxi_ext_vj limit 10;
+select count(*) from nyc_taxi_ext_vj;
+select * from nyc_taxi_ext_vj where vendorid is NULL;
+--No null values in vendorid column. 
+
+
+--BASIC DATA QUALITY CHECKS
+--How many records has each TPEP provider provided? 
+select vendorid , count(*) as n_records
+from nyc_taxi_ext_vj
+group by vendorid;
+--CONCLUSION: there are total 18793079 records and out of it 8447149 are with vendorid=1 (Creative Mobile Technologies, LLC) and 10345930 with vendorid=2 (VeriFone Inc.)
+
+
+--******************Exploratory data analysis to identify encountered unusual or erroneous rows in the dataset**************
+-- PASSENGER_COUNT
+select passenger_count,count(*) as n_passenger 
+from nyc_taxi_ext_vj
+group by passenger_count;
+--CONCLUSION: I am assuming that in nyc taxi max 5 passenger plus one child so total 6 passengers are only allowed so other entries are considering to be erroneous.
+--passenger count 0 has 108970 , 7 has 75, 8 has 60, 9 has 56 and 192 has 1
+--filtering all of these wrong values from this column. 
+
+
+--TRIP_DISTANCE
+select * from nyc_taxi_ext_vj
+WHERE trip_distance is NULL;
+select * from nyc_taxi_ext_vj where trip_distance=0;
+select count(*) as n_notrip from nyc_taxi_ext_vj where trip_distance=0;
+--CONCLUSION: there is no NULL values and but some (120017) trip distances are 0 which needs to be filtered. 
+
+
+--RATECODEID
+select ratecodeid,count(*) as n_ratecode 
+from nyc_taxi_ext_vj
+group by ratecodeid;
+--CONCLUSION: I see irrelavnt entry for ratecodeid as 99 which has 178 records.I will filter out these records and value should betwen 1-6
+
+
+--STORE_AND_FWD_FLAG
+select store_and_fwd_flag,count(*) as n_storeflag 
+from nyc_taxi_ext_vj
+group by store_and_fwd_flag;
+--CONCLUSION: there is no NULL values and everything looks good for this column. 
+
+
+--pulocationid and dolocationid
+select * from nyc_taxi_ext_vj
+WHERE pulocationid is NULL or dolocationid is NULL;
+--CONCLUSION: there is no NULL values and everything looks good for this column.
+
+--payment_type
+select payment_type,count(*) as n_payment 
+from nyc_taxi_ext_vj
+group by payment_type;
+--CONCLUSION: there is no NULL values and everything looks good for this column.
+
+
+--fare_amount
+select * from nyc_taxi_ext_vj
+WHERE fare_amount is NULL;
+--CONCLUSION: there is no NULL values and everything looks good for this column.
+
+
+--extra
+select extra,count(*) as n_extra 
+from nyc_taxi_ext_vj
+group by extra;
+--CONCLUSION: remove negative values AND ALSO as per dictionary we can accpet only 3 values (0,0.5,1)
+
+
+select * from nyc_taxi_ext_vj
+where mta_tax IS null OR tip_amount IS NULL OR tolls_amount IS NULL OR improvement_surcharge IS NULL OR
+total_amount IS NULL;
+--CONCLUSION: there is no NULL values but there are many negative values which are errorneous. these values would be removed
+
+--mta_tax
+select mta_tax,count(*) as n_mta 
+from nyc_taxi_ext_vj
+group by mta_tax;
+--CONCLUSION: need to take only values equal to 0.50
+
+--tip_amount
+select tip_amount,count(tip_amount) as n_mta 
+from nyc_taxi_ext_vj
+group by tip_amount;
+--CONCLUSION: need to remove negative values. 
+
+
+--tolls_amount
+select tolls_amount,count(*) as n_mta 
+from nyc_taxi_ext_vj
+group by tolls_amount;
+--CONCLUSION: need to remove negative values.
+
+
+--improvement_surcharge
+select improvement_surcharge,count(*) as n_mta 
+from nyc_taxi_ext_vj
+group by improvement_surcharge;
+--CONCLUSION: AS PER DICTIONARY DEFINATION, need to take only values = 0.30 and filtering other values. 
+
+
+--************Basic Data Quality Checks Summary*************
+--You might have encountered unusual or erroneous rows in the dataset. Can you conclude which vendor is doing a bad job in providing the records using different columns of the dataset? 
+
+select vendorid, count(*) as n_erroneousrecords
+from nyc_taxi_ext_vj
+where year(tpep_pickup_datetime) != 2017 OR (month(tpep_pickup_datetime) not in (11,12) or year(tpep_dropoff_datetime) != 2017
+or month(tpep_dropoff_datetime) not in (11,12))
+or passenger_count not in (1,2,3,4,5,6) or
+trip_distance <=0 OR ratecodeid not in (1,2,3,4,5,6) or
+payment_type not in (1,2,3,4,5,6) or store_and_fwd_flag not in ('Y', 'N') or
+fare_amount<=0 or
+extra not in (1,0.5,1) or
+mta_tax not in (0,0.5) or
+tip_amount <0.0 or tolls_amount<0.0 or
+improvement_surcharge not in (0,0.3)
+or total_amount <=0
+group by vendorid; 
+--CONCLUSION: Vendor 2 (VefiFone Inc) is doing bad job in providing the records using different columns of the dataset. This vendor provides (5617248) erroneoud records which is higher in comparision to Venror1 records(4649325).
+--1 As per above EDA analysis , this dataset has data for years other than 2017 and months other than Nov and Dec so it has been filtered according to problem statement.
+--2 Passenger_count column has irrelevant values like 0, 192, 7,8,9 , As per myassumption in Nyc_Taxi the max passenger tey allowed is 6 including child seat. So i have filtered other values.
+--3 trp_distance can't be <=0 so filtered the values accordingly.
+--4 retecodeid coulmn also has irrelevant values so filtered accordingly. 
+--5 As per data disctionary , removed irrelevant values from columns like extra, mta_tax, tip_amout, toll_amount, improvement_surcharge and total-amount. All the negative values are also removed from it. 
+
+--********************** END OF EXPLORARTORY DATA ANALYSIS ************
+
+
+
+--PARTITION THE DATA AND CREATING EXTERNAL TABLE
+create external table if not exists nyc_taxi_ext_partitioned_yr_mnth_vj(vendorid int, tpep_pickup_datetime timestamp, tpep_dropoff_datetime timestamp, 
+passenger_count int, trip_distance double, ratecodeid int, store_and_fwd_flag string, pulocationid int, dolocationid int,
+payment_type int, fare_amount double, extra double,	mta_tax double,	tip_amount double, tolls_amount double, improvement_surcharge double,
+total_amount double) partitioned by (yr int, mnth int)
+location '/user/hive/warehouse/nyc_partitioned_vijay';
+
+
+--Then insert the data in the table AFTER REMOVING ALL DATA QUALITY ISSUES
+insert overwrite table nyc_taxi_ext_partitioned_yr_mnth_vj partition(yr, mnth)
+SELECT vendorid,tpep_pickup_datetime,tpep_dropoff_datetime, 
+passenger_count, trip_distance, ratecodeid, store_and_fwd_flag, pulocationid, dolocationid,
+payment_type, fare_amount, extra, mta_tax, tip_amount, tolls_amount, improvement_surcharge, 
+total_amount, year(tpep_pickup_datetime) as yr, month(tpep_pickup_datetime) as mnth
+from nyc_taxi_ext_vj
+WHERE year(tpep_pickup_datetime) = 2017 
+AND (month(tpep_pickup_datetime) BETWEEN 11 AND 12)
+AND year(tpep_dropoff_datetime) = 2017 AND (month(tpep_dropoff_datetime) BETWEEN 11 AND 12)
+AND (passenger_count BETWEEN 1 AND 6)
+AND trip_distance > 0.0
+AND (ratecodeid BETWEEN 1 AND 6)
+AND fare_amount > 0.0
+AND extra IN (0,0.5,1)
+AND mta_tax IN (0,0.50)
+AND tip_amount >= 0
+AND tolls_amount >= 0
+AND improvement_surcharge=0.30
+AND total_amount>0;
+
+
+--Verifying that the data imported into the partitioned table correctly
+select count(*) from nyc_taxi_ext_partitioned_yr_mnth_vj;
+select * from nyc_taxi_ext_partitioned_yr_mnth_vj limit 10;
+--CONCLUSION: there are total 18482745records in the table
+
+
+
+--ORC FILE FORMAT */
+--This format improves query performance
+--First, create ORC table
+create external table if not exists nyc_taxi_ext_partitioned_yr_mnth_orc_vj(vendorid int, tpep_pickup_datetime timestamp, tpep_dropoff_datetime timestamp, 
+passenger_count int, trip_distance double, ratecodeid int, store_and_fwd_flag string, pulocationid int, dolocationid int,
+payment_type int, fare_amount double, extra double,	mta_tax double,	tip_amount double, tolls_amount double, improvement_surcharge double,
+total_amount double) partitioned by (yr int, mnth int)
+stored as orc location '/user/hive/warehouse/nyc_partitioned_vijay'
+tblproperties ("orc.compress"="SNAPPY");
+
+
+--Then, write data from partition table into ORC table
+insert overwrite table nyc_taxi_ext_partitioned_yr_mnth_orc_vj partition(yr , mnth)
+select * from nyc_taxi_ext_partitioned_yr_mnth_vj;
+
+--Verifying that the data imported into the ORC-formatted table correctly. total records are 18482745
+select count(*) from nyc_taxi_ext_partitioned_yr_mnth_orc_vj;
+select * from nyc_taxi_ext_partitioned_yr_mnth_orc_vj limit 10;
+
+-------------------------------------------------------------------------------------------------------
+
+--******************ANALYSIS 1************* 
+--Q1: Compare the overall average fare per trip for November and December.
+
+select round(avg(fare_amount), 2) as avg_farepertrip, mnth as monthoftheyear
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj
+group by mnth
+order by mnth;
+--CONCLUSION: Average fare in November is 12.91 and December is 12.75
+
+--**comparision between Nov and Dec month using CASE function. 
+select round(avg(CASE when mnth=11 then fare_amount else null end),2) as November_Average_Fare, 
+round(avg(CASE when mnth=12 then fare_amount else null end),2)as December_Average_Fare,
+round(100*((avg(CASE when mnth=11 then fare_amount else null end)-avg(CASE when mnth=12 then fare_amount else null end))/avg(CASE when mnth=12 then fare_amount else null end)),2) as Nov_Avg_pergreaterthan_Dec
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj;
+--CONCLUSION: Therefore the Average fare_charge recorded during November is -1.11% lesser than the average fare_charge recorded in December.Hence average fare is higher in the month of december.  
+
+
+
+--Q2: Explore the ‘number of passengers per trip’ - how many trips are made by each level of ‘Passenger_count’? Do most people travel solo or with other people?
+
+select passenger_count as n_passengers, count(*) as n_trips
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj
+group by passenger_count
+order by passenger_count;
+
+--***Comparision using CASE function by grouping the whole trips into solo and group and calculating there percentage share. 
+SELECT sum(CASE when passenger_count = 1 THEN 1 ELSE 0 END)as Num_Solo_Passenger_Trips, 
+sum(CASE when passenger_count != 1 THEN 1 ELSE 0 END)as Num_Group_Passenger_Trips, 
+round(100*sum(CASE when passenger_count = 1 THEN 1 ELSE 0 END)/count(*),3) as Solo_Trips_as_Percentage_of_Total_Trips
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj;
+--CONCLUSION: People prefer to travel solo (70.89%) than with other people.
+
+
+
+--Q3: Which is the most preferred mode of payment?
+
+select payment_type as pay_mode, count(*) as n_trips
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj
+group by payment_type
+order by n_trips desc;
+--CONCLUSION: Credit card(12470546) is the most preferred mode of payment. then it is CASH which has (5914927).  
+
+
+
+--Q4: What is the average tip paid per trip? Compare the average tip with the 25th, 50th and 75th percentiles and comment whether the ‘average tip’ is a 
+--representative statistic (of the central tendency) of ‘tip amount paid’. Hint: You may use percentile_approx(DOUBLE col, p): Returns an approximate pth percentile of a numeric 
+
+--column (including floating point types) in the group.
+select round(avg(tip_amount),3) as avg_tippaid, round(percentile_approx(tip_amount, 0.25),3) as 25th_percentile, round(percentile_approx(tip_amount, 0.50),3) as 50th_percentile, round(percentile_approx(tip_amount, 0.75),3) as 75th_percentile
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj
+where payment_type != 2;
+--CONCLUSION: As it is clearly mentioned that payment type =2 (CASH) can not be accepted for tip_amount. 
+--AVG_tip= 2.68 , 25th percentile = 1.32 , 50th percentile = 2 and 75th percentile = 3.05
+--difference of Average tip paid and median (50th percentile) is equal to 0.68 that means average can't be central of tendency and we should use median as center of tendecy here. 
+
+
+
+--Q5: Explore the ‘Extra’ (charge) variable - what fraction of total trips have an extra charge is levied?
+select extra, count(*) as n_totaltrips
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj
+group by extra
+order by extra;
+
+--**comparision using CASE function to calculate percentage share of the trips between trips with extra charge and without wxtra charge.  
+SELECT sum(CASE when extra = 0 THEN 1 ELSE 0 END)as Trips_without_extracharge, 
+sum(CASE when extra != 0 THEN 1 ELSE 0 END)as Trips_with_extracharge, 
+round(100*sum(CASE when extra != 0 THEN 1 ELSE 0 END)/count(*),3) as fraction_trips_with_extracharge
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj;
+
+--CONCLUSION: total trip without extracharge = 9956711 and with extracharge= 8527746.therefore 46.13% fraction of total trips are levied with extra charge. 
+
+
+
+
+--*****************Analysis-II*************
+
+--Q1: What is the correlation between the number of passengers on any given trip, and the tip paid per trip? Do multiple travellers tip more compared to solo travellers? 
+--Hint: Use CORR(Col_1, Col_2)
+-- Calculating correlations to understand passenger behavious between solo and groups. 
+select round(corr(passenger_count, tip_amount),3) as cor_passenger_tipamnt,round(avg(CASE when passenger_count=1 then tip_amount else null end),3) as Solo_Avg_Tip, 
+round(avg(CASE when passenger_count != 1 then tip_amount else null end),3) as Group_Trips_Average_Tip
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj
+where passenger_count !=2;
+
+--CONCLUSION: the correlation between passenger and tip is -0.005 and it seems to be WEAK Negative correlation.
+-- Average tip for solo is 1.833 and for group is 1.776 therefore solo gives more tip then group travellers. 
+
+
+
+--Q2: Segregate the data into five segments of ‘tip paid’: [0-5), [5-10), [10-15) , [15-20) and >=20. Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+--Creating bucketing for tip_amount
+
+select Tip_amount_Bucket, count(*)as n_trips, max(records_count)as total_n_trips, 
+round(count(*)/max(records_count),5)as fraction_buckets_trips
+from (select count(*) over () records_count,
+	CASE when tip_amount >= 0 and tip_amount <5 then 'Tip_Bucket[0-5]' 
+	when tip_amount >=5 and tip_amount < 10 then 'Tip_Bucket[5-10]'
+	when tip_amount >=10 and tip_amount < 15 then 'Tip_Bucket[10-15]'
+	when tip_amount >=15 and tip_amount < 20 then 'Tip_Bucket[15-20]'
+	else 'Tip_Bucket[>=20]]' 
+	end as Tip_amount_Bucket 
+    from nyc_taxi_ext_partitioned_yr_mnth_orc_vj)as sub_tbl
+group by Tip_amount_Bucket
+order by fraction_buckets_trips desc;
+--CONCLUSIONS: 
+--tip_amount_bucket    	n_trips	    total_n_trips	fraction_buckets_trips
+--1	Tip_Bucket[0-5]	    17079976    	18482745	     0.9241
+--2	Tip_Bucket[5-10]	1039492	        18482745	     0.05624
+--3	Tip_Bucket[10-15]	311354	        18482745	     0.01685
+--4	Tip_Bucket[15-20]	35314	        18482745	     0.00191
+--5	Tip_Bucket[>=20]]	16609	        18482745	     0.0009
+
+
+
+--Q3: Which month has a greater average ‘speed’ - November or December? Note that the variable ‘speed’ will have to be derived from other metrics. Hint: You have columns for distance and time.
+-- As we know that speed=distance/time and calculating speed in MPH unit for november and december. Also calculating percentage difference to know which most the speed was high. 
+SELECT round(avg(CASE when mnth=11 THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3)as November_Average_Speed_MPH, 
+round(avg(CASE when mnth=12 THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3)as December_Average_Speed_MPH,
+round(round(avg(CASE when mnth=11 THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3) - round(avg(CASE when mnth=12 
+THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3),3) as November_minus_December_Avg_Speed_MPH
+from nyc_taxi_ext_partitioned_yr_mnth_orc_vj;
+--CONCLUSION:Avg speed in november is 12.69 and december is 12.62. 
+--the difference in the percentage is +0.067 that means avg speed is higher in the month of november. 
+
+
+
+
+--Q4: Analyse the average speed of the most happening days of the year, i.e. 31st December (New year’s eve) and 25th December (Christmas Eve) and compare it with the overall average. 
+
+--Analysing speed for 25th Dec(christmas) and 31th Dec(New year eve) using same formula(speed=distance/time) and unit(MPH). Then also analysing percentage over overall average for the comparison perspective.  
+SELECT round(avg(CASE when mnth=12 and day(tpep_pickup_datetime)=25 THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3) as 25thdec_Avg_Speed_MPH, 
+round(avg(CASE when mnth=12 and day(tpep_pickup_datetime)=31 THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3) as 31thdec_Avg_Speed_MPH, 
+round(avg(CASE when mnth in (11,12) THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3) as Overall_Avg_Speed_MPH, 
+round(round(avg(CASE when mnth=12 and day(tpep_pickup_datetime)=25 THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3) - round(avg(CASE when mnth in (11,12) THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3),3) as 25thdec_minus_Overall_Avg_Speed_MPH, 
+round(round(avg(CASE when mnth=12 and day(tpep_pickup_datetime)=31 THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3) - round(avg(CASE when mnth in (11,12) THEN (trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)) ELSE null end),3),3) as 31thdec_minus_Overall_Avg_Speed_MPH
+FROM nyc_taxi_ext_partitioned_yr_mnth_orc_vj;
+
+--CONCLUSION: Overall Average Speed for November and December Combined: 12.657 MPH
+--Average Speed on 25th Dec(Christmas Eve): 16.859 MPH
+--Speed greater than Overall Avg: 4.202 MPH
+--Average Speed on 31th dec(New Year's Eve): 14.09 MPH
+--Speed greater than Overall Avg: 1.434 MPH
+--As the average speed on both Cristmas and New Year is higher than the overall average speed.
+--However, the average speed is Highest for Christmas than new year evening. 
+
+
+--****************** Thank You*********************
